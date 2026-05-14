@@ -1,0 +1,44 @@
+# Credenciales y secretos
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+credentials.json
+service-account*.json
+
+# Dependencias
+node_modules/
+.pnpm-store/
+
+# Build
+dist/
+build/
+*.log
+.cache/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# n8n local data
+.n8n/
+n8n-data/
+
+# Postgres dumps locales
+*.sql.gz
+*.dump
+db/dumps/
+
+# Logs
+logs/
+npm-debug.log*
+yarn-debug.log*
+
+# Temp
+tmp/
+.tmp/

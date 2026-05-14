@@ -1,0 +1,18 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: ideaia-agent-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ideaia
+      POSTGRES_PASSWORD: ideaia_dev
+      POSTGRES_DB: ideaia_agent
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+
+volumes:
+  postgres_data:
+    name: ideaia-agent-postgres-data
