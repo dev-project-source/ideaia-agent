@@ -2,7 +2,22 @@
 
 Agente IA en n8n que consume el KB generado por `ideaia-onboarding` (Google Sheet de 16 pestañas) y responde a leads vía GHL.
 
-> **Estado:** en construcción — Fase A en curso. Cliente piloto: Dr. Carlos Petro.
+> **Estado:** Día 0 completado (repo + server accesible). Día 1 (infra) pendiente. Cliente piloto: Dr. Carlos Petro.
+
+## 🔥 Si sos una sesión nueva de Claude Code, leé esto primero
+
+**Estado real al 2026-05-14 ~20:00:**
+
+- ✅ Server Contabo accesible: `ssh root@45.13.59.95` (password en notepad del user)
+- ✅ Ubuntu 24.04.4 LTS limpio, 144GB libres, 6 cores
+- ⏳ Server SIN instalar nada todavía — primer paso: setup base (hostname, timezone, apt update, Docker)
+- ⏳ Upstash: pendiente de crear por el user con `dev-project@ideaia.app`
+- ⏳ OpenAI API key: pendiente de obtener del jefe (cuenta existente IDEA IA)
+- ⏳ GHL: API key del Dr. Petro la tiene el user, falta cargar al `.env`
+
+**Antes de pedirle al user que pegue credenciales en el chat:** generale un `.env` local desde `.env.example` y que él pegue ahí. Solo necesitás los nombres de variables, no los valores.
+
+**Lo más importante:** el user no es técnico. Pasale comandos uno por uno, en bloques pequeños, con explicación breve de qué hace cada uno. Si tarda un comando, decile cuánto. No le tires plantones de 50 líneas — confunde y se pierde.
 
 ## Contexto obligatorio antes de tocar nada
 
