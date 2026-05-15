@@ -125,7 +125,86 @@ async function loadClientContext(pool, clientId) {
     [clientId]
   );
 
-  return { client, branding, restrictions: r.rows, services: s.rows, locations: l.rows, schedules: sched.rows };
+  const p = await pool.query(
+    `SELECT parametro, valor, descripcion FROM agent_params WHERE client_id = $1`,
+    [clientId]
+  );
+  const params = {};
+  for (const row of p.rows) {
+    // El parámetro puede venir como "agente|key" — sacamos solo la key
+    const key = row.parametro.includes('|') ? row.parametro.split('|').slice(1).join('|') : row.parametro;
+    params[key.toLowerCase().trim()] = row.valor;
+  }
+
+  return {
+    client, branding, restrictions: r.rows, services: s.rows,
+    locations: l.rows, schedules: sched.rows, params,
+  };
+}
+
+// Resuelve la guía de tratamiento (TU o USTED) con ejemplos few-shot
+function resolveTreatmentGuideline(tratamiento) {
+  const t = String(tratamiento || 'TU').toUpperCase().trim();
+  if (t === 'USTED') {
+    return [
+      'Tratamiento: USTED (formal).',
+      'Usar siempre: usted, su/sus, le/lo/la, le gustaría, podría, desea, agradezco.',
+      'Ejemplos correctos:',
+      '  · "¿Le gustaría agendar una valoración?"',
+      '  · "Le confirmo en un momento."',
+      '  · "Para esto el Dr. necesita verlo en persona."',
+      'Incorrecto (NO usar): "te conecto", "querés", "podés", "te paso".',
+    ].join('\n');
+  }
+  // Default TU (informal-cercano LATAM neutro, sin voseo)
+  return [
+    'Tratamiento: TU (informal-cercano, español neutro LATAM).',
+    'Usar siempre: tú/te/ti, tu/tus, quieres, puedes, te gustaría, tienes.',
+    'Ejemplos correctos:',
+    '  · "¿Te gustaría agendar una valoración?"',
+    '  · "Te confirmo en un momento."',
+    '  · "Para esto el Dr. necesita verte en persona."',
+    'Incorrecto (NO usar):',
+    '  · USTED: "le gustaría", "desea", "su consulta", "lo conecto", "no dude en".',
+    '  · Voseo argentino: "tenés", "querés", "podés", "vos".',
+  ].join('\n');
+}
+
+// Ejemplo de saludo correcto según tratamiento (few-shot inline)
+function resolveSaludoEjemplo(tratamiento, nombreAgente, businessName) {
+  const t = String(tratamiento || 'TU').toUpperCase().trim();
+  const agente = nombreAgente || 'tu asistente';
+  if (t === 'USTED') {
+    return [
+      `Lead: "Hola, vi su Instagram. ¿Hacen botox?"`,
+      `${agente}: "¡Hola! Sí, en ${businessName} hacemos botox. ¿Le gustaría agendar una valoración para comentarle más?"`,
+      `(Nota: "su Instagram", "Le gustaría", "comentarle" — todo USTED.)`,
+    ].join('\n');
+  }
+  return [
+    `Lead: "Hola, vi su Instagram. ¿Hacen botox?"`,
+    `${agente}: "¡Hola! Sí, en ${businessName} hacemos botox. ¿Te gustaría agendar una valoración para contarte más?"`,
+    `(Nota: "Te gustaría", "contarte" — todo TU. NUNCA "Le gustaría" ni "no dude en decírmelo".)`,
+  ].join('\n');
+}
+
+// Política de precios traducida a guía textual para el LLM
+function resolvePriceGuideline(params, services) {
+  const p = (params.precios_en_chat || params.precio_en_chat || params.canshareprices || 'desde').toLowerCase();
+  if (p === 'si-abiertos' || p === 'si_abiertos') {
+    return 'Política de precios: PUEDES dar precios exactos del catálogo SERVICIOS cuando el lead pregunte.';
+  }
+  if (p === 'no-llamada' || p === 'no_llamada') {
+    return 'Política de precios: NO mencionar precios en chat. Redirigir: "te conecto con el equipo para confirmarte valores."';
+  }
+  // default: desde
+  const precios = services
+    .filter((s) => s.precio_servicio)
+    .map((s) => Number(s.precio_servicio));
+  const min = precios.length ? Math.min(...precios) : null;
+  const moneda = services[0]?.moneda || 'COP';
+  const ejemploDesde = min ? `Ejemplo: "Los tratamientos van desde ${min.toLocaleString('es-CO')} ${moneda}, pero el precio final depende de la valoración."` : '';
+  return `Política de precios: "DESDE". Podés mencionar el precio MÍNIMO del catálogo aplicable, nunca un precio puntual cerrado en chat. ${ejemploDesde}`.trim();
 }
 
 // ─── Retrieval semántico ───────────────────────────────────────────────────
@@ -176,13 +255,21 @@ async function loadHistory(pool, conversationId, limit = HISTORY_TURNS) {
 async function buildSystemPrompt(ctx, retrieved, leadName) {
   const tpl = await loadContract();
 
-  // Resumen catálogo (lista corta para que el LLM lo tenga in-context)
-  const serviciosLines = ctx.services.map((s) => {
-    const precio = s.precio_servicio ? `${s.tipo_precio || ''} ${Number(s.precio_servicio).toLocaleString('es-CO')} ${s.moneda || ''}`.trim() : '(sin precio en KB)';
-    const variante = s.variante ? ` — ${s.variante}` : '';
-    const val = s.requiere_valoracion ? ' (requiere valoración)' : '';
-    return `  - [${s.external_id}] ${s.servicio}${variante}: ${precio}${val}`;
-  }).join('\n') || '  (sin servicios activos)';
+  // Catálogo de servicios como tabla estructurada (orden estable, fácil de citar)
+  const serviciosLines = ctx.services.length
+    ? [
+        'ID         | Servicio                                  | Precio              | Notas',
+        '-----------|-------------------------------------------|---------------------|------------------',
+        ...ctx.services.map((s) => {
+          const precio = s.precio_servicio
+            ? `${s.tipo_precio === 'Desde' ? 'desde ' : ''}${Number(s.precio_servicio).toLocaleString('es-CO')} ${s.moneda || ''}`.trim()
+            : '(no en KB)';
+          const nombre = (s.servicio + (s.variante ? ` (${s.variante})` : '')).padEnd(41).slice(0, 41);
+          const val = s.requiere_valoracion ? 'requiere valoración' : '';
+          return `${s.external_id.padEnd(10)} | ${nombre} | ${precio.padEnd(19)} | ${val}`;
+        }),
+      ].join('\n')
+    : '  (sin servicios activos)';
 
   const sedesLines = ctx.locations.map((l) =>
     `  - ${l.nombre}: ${l.direccion || ''}, ${l.ciudad || ''}${l.telefono ? ' · tel: ' + l.telefono : ''}`
@@ -200,6 +287,11 @@ async function buildSystemPrompt(ctx, retrieved, leadName) {
       ).join('\n')
     : '  (sin chunks relevantes — si el lead pide info que no está en SERVICIOS/SEDES/HORARIOS, decir "no tengo ese dato confirmado")';
 
+  const tratamiento = ctx.branding.tratamiento || 'TU';
+  const tratamientoGuideline = resolveTreatmentGuideline(tratamiento);
+  const saludoEjemplo = resolveSaludoEjemplo(tratamiento, ctx.branding.nombre_agente, ctx.client.business_name);
+  const priceGuideline = resolvePriceGuideline(ctx.params || {}, ctx.services);
+
   const vars = {
     nombre_agente: ctx.branding.nombre_agente || 'asistente',
     business_name: ctx.client.business_name,
@@ -207,7 +299,9 @@ async function buildSystemPrompt(ctx, retrieved, leadName) {
     lead_channels: '(varios)',
     tono: ctx.branding.tono || 'profesional y cercano',
     formalidad: ctx.branding.formalidad || 'semi-formal',
-    tratamiento: ctx.branding.tratamiento || 'TU',
+    tratamiento,
+    tratamiento_guideline: tratamientoGuideline,
+    saludo_ejemplo: saludoEjemplo,
     uso_emojis: ctx.branding.uso_emojis || 'ocasional',
     longitud: ctx.branding.longitud || 'corto',
     propuesta_valor: ctx.branding.propuesta_valor || '',
@@ -216,10 +310,10 @@ async function buildSystemPrompt(ctx, retrieved, leadName) {
     restrictions_list: restriccionesLines,
     forbidden_phrases_list: '(ver tabla de restricciones arriba — extender en sync futuro)',
     sensitive_topics_list: '(ver tabla de restricciones arriba)',
-    can_share_prices: '(según política del cliente — por defecto "desde")',
-    discount_policy: '(según política — por defecto no se ofrecen descuentos espontáneos)',
-    no_show_policy: '(según política — confirmar al agendar)',
-    retrieved_context: `SERVICIOS ACTIVOS:\n${serviciosLines}\n\nSEDES:\n${sedesLines}\n\nHORARIOS:\n${horariosLines}\n\nCHUNKS RELEVANTES (búsqueda semántica):\n${retrievedLines}`,
+    can_share_prices: priceGuideline,
+    discount_policy: ctx.params?.discount_policy || ctx.params?.discountpolicy || 'No ofrecer descuentos espontáneos. Mencionar paquetes/promociones del KB si las hay.',
+    no_show_policy: ctx.params?.no_show_policy || ctx.params?.noshowpolicy || 'Confirmar política de no-show al momento de agendar (definirla con el equipo si el lead pregunta).',
+    retrieved_context: `CATÁLOGO DE SERVICIOS:\n${serviciosLines}\n\nSEDES:\n${sedesLines}\n\nHORARIOS DE OPERACIÓN (no usar para confirmar slots — disponibilidad real va a GHL):\n${horariosLines}\n\nCHUNKS RELEVANTES (búsqueda semántica al mensaje del lead):\n${retrievedLines}`,
     conversation_history: '(en mensajes a continuación)',
     lead_name: leadName || '(sin nombre)',
   };
