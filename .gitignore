@@ -42,3 +42,6 @@ yarn-debug.log*
 # Temp
 tmp/
 .tmp/
+
+# Estado local del REPL de test
+.test-conversation-state
