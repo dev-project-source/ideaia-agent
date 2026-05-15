@@ -5,12 +5,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "db:migrate": "bash db/migrate.sh",
-    "db:seed:petro": "bash db/seed-petro.sh",
     "db:up": "docker compose -f docker/docker-compose.yml up -d",
     "db:down": "docker compose -f docker/docker-compose.yml down",
-    "test:conversation": "node scripts/test-conversation.js",
-    "embed:batch": "node scripts/embed-batch.js"
+    "first-activation": "node scripts/first-activation.js",
+    "test:conversation": "node scripts/test-conversation.js"
   },
   "engines": {
     "node": ">=20"
@@ -18,6 +16,7 @@
   "dependencies": {
     "@upstash/redis": "^1.34.0",
     "dotenv": "^16.4.5",
+    "googleapis": "^144.0.0",
     "openai": "^4.67.0",
     "pg": "^8.13.0"
   },
