@@ -1,0 +1,145 @@
+{
+  "name": "03 · Message Handler (GHL → Agent → respuesta)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "agent-message",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-1",
+      "name": "Webhook · inbound GHL",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "agent-message-prod"
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "contactId",
+              "value": "={{$json.body.contact_id || $json.body.contactId || ('TEST-' + Date.now())}}"
+            },
+            {
+              "name": "contactName",
+              "value": "={{$json.body.contact && ($json.body.contact.first_name + ' ' + ($json.body.contact.last_name || '')) || $json.body.contactName || 'Lead'}}"
+            },
+            {
+              "name": "channel",
+              "value": "={{$json.body.channel || $json.body.message && $json.body.message.type || 'unknown'}}"
+            },
+            {
+              "name": "messageBody",
+              "value": "={{$json.body.message && $json.body.message.body || $json.body.body || ''}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-1",
+      "name": "Normalizar payload",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.messageBody}}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        }
+      },
+      "id": "if-1",
+      "name": "¿Mensaje válido?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://agent-api:3000/handle-message",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"contactId\": \"{{$json.contactId}}\",\n  \"contactName\": \"{{$json.contactName}}\",\n  \"channel\": \"{{$json.channel}}\",\n  \"body\": \"{{$json.messageBody.replace(/\"/g, '\\\\\"')}}\"\n}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "http-1",
+      "name": "Llamar agent-api",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 240]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"ok\": true,\n  \"reply\": {{$json.reply ? JSON.stringify($json.reply) : '\"\"'}},\n  \"conversationId\": \"{{$json.conversationId || ''}}\",\n  \"meta\": {\n    \"latencyMs\": {{$json.metadata && $json.metadata.latencyMs || 0}},\n    \"tokensIn\": {{$json.metadata && $json.metadata.tokensIn || 0}},\n    \"tokensOut\": {{$json.metadata && $json.metadata.tokensOut || 0}}\n  }\n}",
+        "options": {}
+      },
+      "id": "respond-1",
+      "name": "Respond OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1120, 240]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseCode": 400,
+        "responseBody": "={\"ok\":false,\"error\":\"messageBody vacío o ausente\"}",
+        "options": {}
+      },
+      "id": "respond-2",
+      "name": "Respond 400",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [900, 420]
+    },
+    {
+      "parameters": {
+        "content": "## Message Handler\n\nRecibe webhook de GHL (o curl de test), normaliza payload, llama a `agent-api:3000/handle-message`, devuelve la respuesta del agente.\n\n**Día 6 (pendiente):** agregar un nodo HTTP Request más entre 'Llamar agent-api' y 'Respond OK' que mande la respuesta del agente al lead vía GHL API (POST `/conversations/messages`). Bloqueado por:\n- `GHL_API_KEY` de la sub-cuenta del Dr. Petro\n- Messaging configurado en GHL\n\n**Test con curl:**\n```\ncurl -X POST http://45.13.59.95:5678/webhook/agent-message \\\n  -H 'Content-Type: application/json' \\\n  -d '{\"contactId\":\"TEST-1\",\"channel\":\"whatsapp\",\"body\":\"hola, hacen botox?\"}'\n```",
+        "height": 380,
+        "width": 480
+      },
+      "id": "note-1",
+      "name": "Notas",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [120, 540]
+    }
+  ],
+  "connections": {
+    "Webhook · inbound GHL": {
+      "main": [[{ "node": "Normalizar payload", "type": "main", "index": 0 }]]
+    },
+    "Normalizar payload": {
+      "main": [[{ "node": "¿Mensaje válido?", "type": "main", "index": 0 }]]
+    },
+    "¿Mensaje válido?": {
+      "main": [
+        [{ "node": "Llamar agent-api", "type": "main", "index": 0 }],
+        [{ "node": "Respond 400", "type": "main", "index": 0 }]
+      ]
+    },
+    "Llamar agent-api": {
+      "main": [[{ "node": "Respond OK", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    { "name": "agent" },
+    { "name": "day5" }
+  ]
+}

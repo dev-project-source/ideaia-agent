@@ -1,0 +1,125 @@
+# =============================================================================
+# IDEA IA · Agent stack — versión completa del server (con agent-api).
+# =============================================================================
+# Reemplaza al /opt/ideaia-agent/docker-compose.yml que dejó setup-day1.sh.
+# Cambios desde Día 1:
+#   + Servicio agent-api (nuevo, Día 5): HTTP server que ejecuta handleMessage.
+#     Se construye desde el repo (build context = raíz del repo).
+#     n8n lo llama por red interna (http://agent-api:3000/handle-message).
+# =============================================================================
+
+name: ideaia-agent
+
+services:
+  postgres-agent:
+    image: pgvector/pgvector:pg16
+    container_name: ideaia-postgres-agent
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_AGENT_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_AGENT_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_AGENT_DB}
+    ports:
+      - "127.0.0.1:5432:5432"   # solo localhost del server (acceso vía SSH tunnel)
+    volumes:
+      - postgres_agent_data:/var/lib/postgresql/data
+      - ./db-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_AGENT_USER} -d ${POSTGRES_AGENT_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres-n8n:
+    image: postgres:16
+    container_name: ideaia-postgres-n8n
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_N8N_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_N8N_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_N8N_DB}
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - postgres_n8n_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_N8N_USER} -d ${POSTGRES_N8N_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: ideaia-n8n
+    restart: unless-stopped
+    depends_on:
+      postgres-n8n:
+        condition: service_healthy
+    environment:
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres-n8n
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: ${POSTGRES_N8N_DB}
+      DB_POSTGRESDB_USER: ${POSTGRES_N8N_USER}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_N8N_PASSWORD}
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+      N8N_HOST: ${N8N_HOST}
+      N8N_PORT: ${N8N_PORT}
+      N8N_PROTOCOL: ${N8N_PROTOCOL}
+      WEBHOOK_URL: ${WEBHOOK_URL}
+      GENERIC_TIMEZONE: ${GENERIC_TIMEZONE}
+      N8N_RUNNERS_ENABLED: "true"
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_SECURE_COOKIE: "false"
+    ports:
+      - "5678:5678"
+    volumes:
+      - n8n_data:/home/node/.n8n
+
+  # ─── NUEVO (Día 5) ────────────────────────────────────────────────────────
+  agent-api:
+    build:
+      context: ${REPO_PATH:-./repo}  # ruta al repo `ideaia-agent` cloneado en el server
+      dockerfile: docker/Dockerfile
+    image: ideaia-agent-api:latest
+    container_name: ideaia-agent-api
+    restart: unless-stopped
+    depends_on:
+      postgres-agent:
+        condition: service_healthy
+    environment:
+      # Postgres (red interna Docker → host = nombre del servicio)
+      PG_HOST: postgres-agent
+      PG_PORT: 5432
+      PG_USER: ${POSTGRES_AGENT_USER}
+      PG_PASSWORD: ${POSTGRES_AGENT_PASSWORD}
+      PG_DATABASE: ${POSTGRES_AGENT_DB}
+
+      # OpenAI
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_LLM_MODEL: ${OPENAI_LLM_MODEL:-gpt-4o-mini}
+      OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
+
+      # Cliente piloto (Dr. Petro)
+      PILOT_CLIENT_ID: ${PILOT_CLIENT_ID}
+
+      # Puerto interno
+      AGENT_API_PORT: 3000
+      NODE_ENV: production
+    ports:
+      - "127.0.0.1:3000:3000"   # solo localhost — n8n se conecta vía red interna
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  postgres_agent_data:
+    name: ideaia-postgres-agent-data
+  postgres_n8n_data:
+    name: ideaia-postgres-n8n-data
+  n8n_data:
+    name: ideaia-n8n-data
