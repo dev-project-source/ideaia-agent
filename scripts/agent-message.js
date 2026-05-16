@@ -31,7 +31,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import OpenAI from 'openai';
+import { TOOL_SCHEMAS, executeTool } from './lib/tools.js';
 
+const MAX_TOOL_ROUNDS = 4; // protección contra loops del LLM si pide tool calls infinitas
 const { Pool } = pg;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -348,7 +350,7 @@ export async function handleMessage({ clientId, contactId, contactName, channel,
   // 4. System prompt
   const system = await buildSystemPrompt(ctx, retrieved, contactName);
 
-  // 5. LLM call
+  // 5. LLM call con function calling — loop hasta que devuelva texto sin tools
   const tLlm = Date.now();
   const messages = [
     { role: 'system', content: system },
@@ -356,37 +358,88 @@ export async function handleMessage({ clientId, contactId, contactName, channel,
     { role: 'user', content: body },
   ];
 
-  const completion = await openai.chat.completions.create({
-    model: LLM_MODEL,
-    temperature: LLM_TEMP,
-    messages,
-  });
+  const toolCallsLog = []; // historial de tools ejecutadas para auditoría
+  let totalTokensIn = 0;
+  let totalTokensOut = 0;
+  let reply = '';
+  const toolCtx = { pool, clientId, conversationId: conv.id, contactId };
 
-  const reply = completion.choices[0].message.content || '';
+  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    const completion = await openai.chat.completions.create({
+      model: LLM_MODEL,
+      temperature: LLM_TEMP,
+      messages,
+      tools: TOOL_SCHEMAS,
+    });
+
+    const msg = completion.choices[0].message;
+    totalTokensIn += completion.usage?.prompt_tokens || 0;
+    totalTokensOut += completion.usage?.completion_tokens || 0;
+
+    if (msg.tool_calls && msg.tool_calls.length > 0) {
+      // El LLM pidió ejecutar 1+ tools. Las ejecutamos en paralelo, agregamos
+      // los resultados al historial y volvemos a llamar al LLM.
+      messages.push({
+        role: 'assistant',
+        content: msg.content || null,
+        tool_calls: msg.tool_calls,
+      });
+      const results = await Promise.all(
+        msg.tool_calls.map(async (tc) => {
+          let args = {};
+          try { args = JSON.parse(tc.function.arguments); } catch {}
+          const result = await executeTool(tc.function.name, args, toolCtx);
+          toolCallsLog.push({
+            name: tc.function.name,
+            arguments: args,
+            result,
+            round,
+          });
+          return { tool_call_id: tc.id, name: tc.function.name, result };
+        })
+      );
+      for (const r of results) {
+        messages.push({
+          role: 'tool',
+          tool_call_id: r.tool_call_id,
+          content: JSON.stringify(r.result),
+        });
+      }
+      continue; // siguiente vuelta del loop con los resultados de las tools
+    }
+
+    // No hay más tool calls → respuesta final en texto
+    reply = msg.content || '';
+    break;
+  }
+
+  if (!reply) {
+    reply = 'Disculpá, no pude procesar la consulta. Te paso con el equipo.';
+  }
+
   const tLlmMs = Date.now() - tLlm;
   const totalMs = Date.now() - t0;
-  const tokensIn = completion.usage?.prompt_tokens || 0;
-  const tokensOut = completion.usage?.completion_tokens || 0;
 
-  // 6. Persistir mensajes
+  // 6. Persistir mensajes (user + assistant con tool_calls + chunks)
   if (persist && conv.id) {
     await pool.query(
-      `INSERT INTO messages (conversation_id, client_id, role, content, model_used, tokens_in, tokens_out, latency_ms)
-       VALUES ($1, $2, 'user', $3, NULL, NULL, NULL, NULL)`,
+      `INSERT INTO messages (conversation_id, client_id, role, content)
+       VALUES ($1, $2, 'user', $3)`,
       [conv.id, clientId, body]
     );
     await pool.query(
       `INSERT INTO messages (
          conversation_id, client_id, role, content, chunks_retrieved,
-         model_used, tokens_in, tokens_out, latency_ms
-       ) VALUES ($1, $2, 'assistant', $3, $4, $5, $6, $7, $8)`,
+         tool_calls, model_used, tokens_in, tokens_out, latency_ms
+       ) VALUES ($1, $2, 'assistant', $3, $4, $5, $6, $7, $8, $9)`,
       [
         conv.id, clientId, reply,
         JSON.stringify(retrieved.map((c) => ({
           source_table: c.source_table, source_external_id: c.source_external_id,
           source_field: c.source_field, similarity: c.similarity,
         }))),
-        LLM_MODEL, tokensIn, tokensOut, totalMs,
+        JSON.stringify(toolCallsLog),
+        LLM_MODEL, totalTokensIn, totalTokensOut, totalMs,
       ]
     );
   }
@@ -396,14 +449,20 @@ export async function handleMessage({ clientId, contactId, contactName, channel,
     conversationId: conv.id,
     metadata: {
       modelUsed: LLM_MODEL,
-      tokensIn,
-      tokensOut,
+      tokensIn: totalTokensIn,
+      tokensOut: totalTokensOut,
       latencyMs: totalMs,
       embedMs: tEmbedMs,
       llmMs: tLlmMs,
       chunksRetrieved: retrieved.map((c) => ({
         ref: `${c.source_table}/${c.source_external_id}/${c.source_field}`,
         sim: c.similarity,
+      })),
+      toolCalls: toolCallsLog.map((tc) => ({
+        name: tc.name,
+        arguments: tc.arguments,
+        ok: tc.result?.ok ?? false,
+        mock: tc.result?.mock ?? false,
       })),
     },
   };
@@ -441,6 +500,14 @@ if (isMain) {
     console.log(`latencia: ${r.metadata.latencyMs}ms (embed ${r.metadata.embedMs}ms · llm ${r.metadata.llmMs}ms)`);
     console.log('chunks usados:');
     r.metadata.chunksRetrieved.forEach((c, i) => console.log(`  ${i + 1}. ${c.ref} (sim ${c.sim.toFixed(3)})`));
+    if (r.metadata.toolCalls && r.metadata.toolCalls.length > 0) {
+      console.log('tool calls ejecutadas:');
+      r.metadata.toolCalls.forEach((t, i) => {
+        const flag = t.ok ? '✓' : '✗';
+        const mockFlag = t.mock ? ' (mock)' : '';
+        console.log(`  ${i + 1}. ${flag} ${t.name}${mockFlag} args=${JSON.stringify(t.arguments)}`);
+      });
+    }
   } catch (e) {
     console.error('FAIL:', e.message);
     process.exitCode = 1;
