@@ -88,26 +88,21 @@ services:
     depends_on:
       postgres-agent:
         condition: service_healthy
+    # env_file carga TODAS las vars del .env al container automáticamente.
+    # Esto es más robusto que interpolación ${VAR} cuando los valores tienen
+    # caracteres especiales o son muy largos (caso del GOOGLE_SERVICE_ACCOUNT_KEY
+    # que es base64 de 3kb).
+    env_file:
+      - .env
     environment:
-      # Postgres (red interna Docker → host = nombre del servicio)
+      # Overrides específicos: mapeamos los nombres del .env (POSTGRES_AGENT_*)
+      # a los nombres que usa el código (PG_*). environment tiene precedencia
+      # sobre env_file.
       PG_HOST: postgres-agent
       PG_PORT: 5432
       PG_USER: ${POSTGRES_AGENT_USER}
       PG_PASSWORD: ${POSTGRES_AGENT_PASSWORD}
       PG_DATABASE: ${POSTGRES_AGENT_DB}
-
-      # OpenAI
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
-      OPENAI_LLM_MODEL: ${OPENAI_LLM_MODEL:-gpt-4o-mini}
-      OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
-
-      # Cliente piloto (Dr. Petro)
-      PILOT_CLIENT_ID: ${PILOT_CLIENT_ID}
-
-      # Google Sheets/Drive (necesario para kb-sync endpoint)
-      GOOGLE_SERVICE_ACCOUNT_KEY: ${GOOGLE_SERVICE_ACCOUNT_KEY}
-
-      # Puerto interno
       AGENT_API_PORT: 3000
       NODE_ENV: production
     ports:
