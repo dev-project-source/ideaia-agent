@@ -14,10 +14,13 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
 # Código de la app
-COPY scripts/agent-message.js   scripts/agent-message.js
-COPY scripts/agent-server.js    scripts/agent-server.js
-COPY scripts/chunking.js        scripts/chunking.js
-COPY prompts/                   prompts/
+COPY scripts/agent-message.js     scripts/agent-message.js
+COPY scripts/agent-server.js      scripts/agent-server.js
+COPY scripts/chunking.js          scripts/chunking.js
+COPY scripts/first-activation.js  scripts/first-activation.js
+COPY scripts/kb-sync.js           scripts/kb-sync.js
+COPY scripts/lib/                 scripts/lib/
+COPY prompts/                     prompts/
 
 ENV NODE_ENV=production
 ENV AGENT_API_PORT=3000

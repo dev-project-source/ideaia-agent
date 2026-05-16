@@ -104,6 +104,9 @@ services:
       # Cliente piloto (Dr. Petro)
       PILOT_CLIENT_ID: ${PILOT_CLIENT_ID}
 
+      # Google Sheets/Drive (necesario para kb-sync endpoint)
+      GOOGLE_SERVICE_ACCOUNT_KEY: ${GOOGLE_SERVICE_ACCOUNT_KEY}
+
       # Puerto interno
       AGENT_API_PORT: 3000
       NODE_ENV: production

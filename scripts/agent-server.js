@@ -30,6 +30,10 @@
 import 'dotenv/config';
 import express from 'express';
 import { handleMessage } from './agent-message.js';
+import { runKbSync } from './kb-sync.js';
+
+// Flag para evitar que 2 syncs corran a la vez sobre el mismo cliente
+const syncsInProgress = new Set();
 
 const PORT = parseInt(process.env.AGENT_API_PORT || '3000', 10);
 const STARTED_AT = Date.now();
@@ -78,6 +82,40 @@ app.post('/handle-message', async (req, res) => {
   } catch (e) {
     console.error(`[ERROR] ${e.message}\n${e.stack}`);
     res.status(500).json({ error: e.message });
+  }
+});
+
+// ─── KB Sync (cron disparado por n8n) ──────────────────────────────────────
+// POST /kb-sync/:clientId
+//   body: { force?: boolean } (opcional, fuerza sync aunque el sheet no haya cambiado)
+//
+// Si el sheet del cliente cambió desde el último sync, re-ejecuta first-activation.
+// Idempotente: si se llama 2 veces seguidas y no hubo cambios, la segunda
+// devuelve { skipped: true }.
+// Protección: si hay un sync en curso para el mismo cliente, devuelve 409.
+app.post('/kb-sync/:clientId', async (req, res) => {
+  const { clientId } = req.params;
+  const force = req.body?.force === true;
+
+  if (!clientId) return res.status(400).json({ error: 'clientId requerido' });
+  if (syncsInProgress.has(clientId)) {
+    return res.status(409).json({ error: 'sync ya en curso para ese cliente' });
+  }
+
+  syncsInProgress.add(clientId);
+  const t0 = Date.now();
+  try {
+    const result = await runKbSync({ clientId, force });
+    console.log(
+      `[${new Date().toISOString()}] kb-sync ${clientId.slice(0, 8)} · ` +
+      `${result.ok ? (result.skipped ? 'skipped' : 'synced') : 'failed'} · ${Date.now() - t0}ms`
+    );
+    res.json(result);
+  } catch (e) {
+    console.error('[kb-sync ERROR]', e);
+    res.status(500).json({ ok: false, error: e.message });
+  } finally {
+    syncsInProgress.delete(clientId);
   }
 });
 

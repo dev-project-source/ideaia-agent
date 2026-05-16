@@ -1,0 +1,149 @@
+{
+  "name": "04 · KB Sync cron (cada 15 min)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "id": "schedule-1",
+      "name": "Cada 15 min",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "clientId",
+              "value": "88649c96-0a0f-46c7-9477-591f6fcbfb28"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-client",
+      "name": "Set clientId (Dr. Petro)",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://agent-api:3000/kb-sync/{{$json.clientId}}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"force\": false}",
+        "options": {
+          "timeout": 120000,
+          "response": { "response": { "neverError": true } }
+        }
+      },
+      "id": "http-sync",
+      "name": "POST agent-api /kb-sync",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.ok}}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "if-ok",
+      "name": "¿OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "summary",
+              "value": "=Sync OK · {{$json.skipped ? 'sin cambios (skipped)' : 'sincronizado: chunks=' + $json.chunks + ', embeddings=' + $json.embeddings}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "log-ok",
+      "name": "Log éxito",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [1120, 220]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "summary",
+              "value": "=Sync FAILED · {{$json.error}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "log-fail",
+      "name": "Log error",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [1120, 380]
+    },
+    {
+      "parameters": {
+        "content": "## KB Sync cron\n\nCada 15 min llama al endpoint `POST /kb-sync/:clientId` del `agent-api`. El endpoint internamente:\n\n1. Lee `clients.last_sheet_modified_at`\n2. Consulta Drive API por el `modifiedTime` actual del Sheet\n3. Si cambió → ejecuta `runActivation()` completo\n4. Si no → devuelve `{skipped: true}` sin tocar OpenAI\n\nEl `clientId` está hardcodeado al Dr. Petro como piloto. Cuando haya más clientes, se reemplaza este nodo Set por un fetch a Postgres listando `clients WHERE status='active'` + loop.\n\n**Bloqueado por nada** — esta pieza es independiente de GHL.",
+        "height": 280,
+        "width": 460
+      },
+      "id": "note",
+      "name": "Notas",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [120, 520]
+    }
+  ],
+  "connections": {
+    "Cada 15 min": {
+      "main": [[{ "node": "Set clientId (Dr. Petro)", "type": "main", "index": 0 }]]
+    },
+    "Set clientId (Dr. Petro)": {
+      "main": [[{ "node": "POST agent-api /kb-sync", "type": "main", "index": 0 }]]
+    },
+    "POST agent-api /kb-sync": {
+      "main": [[{ "node": "¿OK?", "type": "main", "index": 0 }]]
+    },
+    "¿OK?": {
+      "main": [
+        [{ "node": "Log éxito", "type": "main", "index": 0 }],
+        [{ "node": "Log error", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    { "name": "agent" },
+    { "name": "day5" },
+    { "name": "cron" }
+  ]
+}

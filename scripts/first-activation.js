@@ -24,16 +24,13 @@ import { chunkRows } from './chunking.js';
 const { Pool } = pg;
 
 // ─── Config ─────────────────────────────────────────────────────────────────
-const CLIENT_ID = process.env.PILOT_CLIENT_ID;
-const SHEET_ID = process.env.PILOT_SHEET_ID;
+// CLIENT_ID y SHEET_ID son mutables: se setean al invocar runActivation() y
+// las funciones internas (syncX) las leen del scope del módulo.
+let CLIENT_ID = process.env.PILOT_CLIENT_ID;
+let SHEET_ID = process.env.PILOT_SHEET_ID;
 const EMBED_MODEL = process.env.OPENAI_EMBEDDING_MODEL || 'text-embedding-3-small';
 const EMBED_DIM = 1536;
 const BATCH_EMBED_SIZE = 100;
-
-if (!CLIENT_ID || !SHEET_ID) {
-  console.error('FAIL: PILOT_CLIENT_ID y PILOT_SHEET_ID requeridos en .env');
-  process.exit(1);
-}
 
 // ─── Helpers de logging ────────────────────────────────────────────────────
 const log = (msg) => console.log(`[${new Date().toISOString().slice(11, 19)}] ${msg}`);
@@ -677,14 +674,24 @@ async function generateChunksAndEmbeddings(pool, parsedData, syncVersion) {
   return { chunks: chunks.length, embeddings: total };
 }
 
-// ─── Main ──────────────────────────────────────────────────────────────────
-async function main() {
+// ─── Main / función exportable ─────────────────────────────────────────────
+// Si recibe { clientId, sheetId, pool } los usa; sino default a .env / pool nuevo.
+// Devuelve { ok, syncVersion, rowsByTable, chunks, embeddings, durationMs }.
+export async function runActivation(opts = {}) {
+  if (opts.clientId) CLIENT_ID = opts.clientId;
+  if (opts.sheetId) SHEET_ID = opts.sheetId;
+
+  if (!CLIENT_ID || !SHEET_ID) {
+    throw new Error('runActivation requiere clientId y sheetId (o PILOT_CLIENT_ID / PILOT_SHEET_ID en .env)');
+  }
+
+  const tStart = Date.now();
   log(`First Activation · cliente ${CLIENT_ID} · sheet ${SHEET_ID}`);
 
   const auth = getGoogleAuth();
   const sheetsApi = google.sheets({ version: 'v4', auth });
 
-  const pool = new Pool({
+  const pool = opts.pool || new Pool({
     host: process.env.PG_HOST || 'localhost',
     port: parseInt(process.env.PG_PORT || '5432', 10),
     user: process.env.PG_USER,
@@ -692,6 +699,7 @@ async function main() {
     database: process.env.PG_DATABASE,
     max: 5,
   });
+  const ownsPool = !opts.pool;
 
   let runId, syncVersion;
   const rowsByTable = {};
@@ -751,6 +759,17 @@ async function main() {
     log(`✓ First Activation OK · sync_version=${syncVersion}`);
     log(`  chunks=${chunks} · embeddings=${embeddings}`);
     log('================================================================');
+
+    return {
+      ok: true,
+      clientId: CLIENT_ID,
+      sheetId: SHEET_ID,
+      syncVersion,
+      rowsByTable,
+      chunks,
+      embeddings,
+      durationMs: Date.now() - tStart,
+    };
   } catch (e) {
     console.error('FAIL:', e);
     errors.push({ message: e.message, stack: e.stack });
@@ -758,10 +777,17 @@ async function main() {
       await finishSyncRun(pool, runId, 'failed', { rows_upserted: rowsByTable, errors });
     }
     await pool.query(`UPDATE clients SET last_sync_status = 'failed' WHERE id = $1`, [CLIENT_ID]);
-    process.exitCode = 1;
+    return { ok: false, error: e.message, clientId: CLIENT_ID, sheetId: SHEET_ID };
   } finally {
-    await pool.end();
+    if (ownsPool) await pool.end();
   }
 }
 
-main();
+// CLI: si se ejecuta directamente, corre con defaults de .env
+import { fileURLToPath } from 'node:url';
+const isMain = process.argv[1] === fileURLToPath(import.meta.url);
+if (isMain) {
+  runActivation().then((r) => {
+    if (!r.ok) process.exit(1);
+  });
+}
